@@ -39,10 +39,10 @@ class Synchronizer(nn.Module):
         self.fc1_1 = nn.Linear(4096, 256)
         nn.init.kaiming_normal_(self.fc1_1.weight)
 
-        self.hidden1 = torch.randn(1, 1, 256)
-        self.c1 = torch.randn(1, 1, 256)
-        self.hidden2 = torch.clone(self.hidden1)
-        self.c2 = torch.clone(self.c1)
+        self.hidden1 = torch.randn(1, 1, 256).cuda()
+        self.c1 = torch.randn(1, 1, 256).cuda()
+        self.hidden2 = torch.clone(self.hidden1).cuda()
+        self.c2 = torch.clone(self.c1).cuda()
 
 
         self.embed_lstm = nn.LSTM(256, 256)
@@ -72,9 +72,11 @@ class Synchronizer(nn.Module):
         # refactor embedding with LSTM layer 
         lstm_out1, hidden1 = self.embed_lstm(out1, (self.hidden1, self.c1))
         lstm_out1 = lstm_out1.view(T, -1)
+        #torch.reshape(lstm_out1, (T,-1))
         
         lstm_out2 , hidden2 = self.embed_lstm(out2, (self.hidden2, self.c2))
         lstm_out2 = lstm_out2.view(T, -1)
+        #torch.reshape(lstm_out2, (T, -1))
         #print("finished LSTM layers")
         """
         # Create list of costs and min cost and corresponding offset
@@ -133,8 +135,13 @@ class Synchronizer(nn.Module):
         out = nn.functional.relu(out)
         out = nn.MaxPool2d((2,2),stride = 2)(out)
         #print("conv5 out: ",out.size())
-
-        out = out.view(T, 1, -1)
+        out_dim = out.size()[-1]**2
+        embed_dim = out.size()[1]
+        out = torch.reshape(out, (T, 1, 4096))
+        #print(out.size())
+        #out = out.view(T, 1, -1)
+        
+        
         #print("conv out: ",out.size())
         
         out = self.fc1_1(out)

@@ -4,6 +4,11 @@ from os.path import isfile, join
 import torch
 import torch.nn as nn
 import cv2
+from poseEstimation import infer_fast
+from models.with_mobilenet import PoseEstimationWithMobileNet
+from modules.keypoints import extract_keypoints, group_keypoints
+from modules.load_state import load_state
+from modules.pose import Pose, track_poses
 
 class Sampler():
     def __init__(self, data, min_chunk_size, max_chunk_size, max_offset):
@@ -11,7 +16,7 @@ class Sampler():
         self.max_chunk_size = max_chunk_size
         self.min_chunk_size = min_chunk_size
         self.max_offset = max_offset
-        self.pairs = [join(self.data_dir, p) for p in listdir(data_dir)]
+        self.pairs = [join(self.data_dir, p) for p in listdir(self.data_dir)]
         self.curr_pair_index = 0
         self.curr_index = 0
         self.curr_pair = [join(self.pairs[0], f) for f in listdir(self.pairs[0])]
@@ -20,12 +25,23 @@ class Sampler():
         self.cap1 = None
         self.cap2 = None
 
+        self.net = PoseEstimationWithMobileNet()
+        
+        checkpoint = torch.load('../checkpoint_iter_370000.pth', map_location='cpu')
+        load_state(self.net, checkpoint)
+        self.net.cuda()
+
+
         self.H = 128
         self.W = 128
         self.img_mean = np.array([128, 128, 128])
         self.img_scale = np.float32(1/255)
+        self.height_size = 128
+        self.stride = 8
+        self.upsample_ratio = 8
 
     def getNextPair(self):
+        print("________________getting new pair______________________")
         self.curr_pair_index += 1
         if self.curr_pair_index >= len(self.pairs):
           return False
@@ -56,8 +72,8 @@ class Sampler():
           else:
             return None
         
-        buf1 = np.empty((self.max_chunk_size, self.H, self.W, 3), np.dtype('float'))
-        buf2 = np.empty((self.max_chunk_size, self.H, self.W, 3), np.dtype('float'))
+        buf1 = np.empty((self.max_chunk_size, self.H, self.W, 19), np.dtype('float'))
+        buf2 = np.empty((self.max_chunk_size, self.H, self.W, 19), np.dtype('float'))
         fc = 0
         ret1, ret2 = True, True
 
@@ -68,17 +84,25 @@ class Sampler():
         
         buf_idx = 0
         while (fc <= self.curr_index + self.max_chunk_size and fc < frameCount):
-          ret1, img1 = self.cap1.read()
-          ret2, img2 = self.cap2.read()
+            ret1, img1 = self.cap1.read()
+            ret2, img2 = self.cap2.read()
+            scaled_img_1 = self.preprocess(img1)
+            scaled_img_2 = self.preprocess(img2)
 
-
+            heatmaps1, pafs1 = infer_fast(self.net, scaled_img_1, self.height_size, self.stride, self.upsample_ratio, False)
+            heatmaps2, pafs2 = infer_fast(self.net, scaled_img_2, self.height_size, self.stride, self.upsample_ratio, False)
+          
+            buf1[buf_idx] = heatmaps1
+            buf2[buf_idx] = heatmaps2
+            """
           scaled_img_1 = self.preprocess(img1)
           scaled_img_2 = self.preprocess(img2)
 
           buf1[buf_idx] = scaled_img_1
           buf2[buf_idx] = scaled_img_2
-          buf_idx += 1
-          fc += 1
+          """
+            buf_idx += 1
+            fc += 1
 
         # Slice buffers in case we were not able to retrieve the max chunk size
         chunk_size = buf_idx #fc - self.curr_index
@@ -98,6 +122,10 @@ class Sampler():
     def preprocess(self, img):
         scaled_img = cv2.resize(img, (0, 0), fx=self.w_scale, fy=self.h_scale, interpolation=cv2.INTER_LINEAR)
         scaled_img = self.normalize(scaled_img)
+        height_size = 128
+        stride = 8
+        upsample_ratio = 4
+        cpu=False
         return scaled_img
 
     def normalize(self, img):
@@ -145,16 +173,17 @@ def getOffsetCosts(embed1, embed2, max_offset):
             else:
                 embed1_shifted = embed1[offset:, :]
                 embed2_shifted = embed2[:T - offset, :]
-
+            
+            print(embed1_shifted, embed2_shifted)
             overlap = embed1_shifted.size()[0]
             
             similarity = cos(embed1_shifted, embed2_shifted)
-            
+            #print(similarity) 
             cost = torch.sum(cos(embed1_shifted, embed2_shifted)) / overlap
             costs[0,offset] = cost
         
 
-        return costs, min(costs), torch.argmin(costs).item() - max_offset
+        return costs, min(costs), torch.argmax(costs).item() - max_offset
 
 
 
